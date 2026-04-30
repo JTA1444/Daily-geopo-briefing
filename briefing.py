@@ -1,0 +1,310 @@
+import anthropic
+import smtplib
+import os
+import json
+from datetime import date
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+
+# ─────────────────────────────────────────────
+
+# Configuration (lue depuis les secrets GitHub)
+
+# ─────────────────────────────────────────────
+
+ANTHROPIC_API_KEY  = os.environ[“ANTHROPIC_API_KEY”]
+GMAIL_ADDRESS      = os.environ[“GMAIL_ADDRESS”]
+GMAIL_APP_PASSWORD = os.environ[“GMAIL_APP_PASSWORD”]
+RECIPIENT_EMAIL    = os.environ[“RECIPIENT_EMAIL”]
+
+TODAY = date.today().strftime(”%A %d %B %Y”)
+
+SYSTEM_PROMPT = “”“Tu es un analyste géopolitique et économique de haut niveau.
+Génère un briefing JSON structuré avec ce format EXACT (réponds UNIQUEMENT avec le JSON, sans backticks) :
+{
+“headline”: “titre accrocheur résumant la journée”,
+“events”: [
+{
+“flag”: “emoji drapeau”,
+“region”: “pays / région”,
+“title”: “titre de l’événement”,
+“summary”: “résumé factuel en 2-3 phrases”,
+“economic_impact”: “impact concret sur marchés, devises, secteurs”,
+“severity”: “low|medium|high|critical”
+}
+],
+“market_pulse”: {
+“sentiment”: “bullish|bearish|neutral|volatile”,
+“key_risks”: [“risque 1”, “risque 2”, “risque 3”],
+“opportunities”: [“opportunité 1”, “opportunité 2”],
+“currencies_watch”: [“paire 1”, “paire 2”]
+},
+“analyst_note”: “synthèse finale en 3-4 phrases”
+}”””
+
+SEVERITY_COLORS = {
+“low”:      {“bg”: “#d1fae5”, “text”: “#065f46”, “label”: “Faible”},
+“medium”:   {“bg”: “#fef3c7”, “text”: “#92400e”, “label”: “Modéré”},
+“high”:     {“bg”: “#fee2e2”, “text”: “#991b1b”, “label”: “Élevé”},
+“critical”: {“bg”: “#fecaca”, “text”: “#7f1d1d”, “label”: “Critique”},
+}
+
+SENTIMENT_ICONS = {
+“bullish”:  (“↑”, “#065f46”),
+“bearish”:  (“↓”, “#991b1b”),
+“neutral”:  (“→”, “#374151”),
+“volatile”: (“⚡”, “#92400e”),
+}
+
+# ─────────────────────────────────────────────
+
+# 1. Appel API Claude avec web search
+
+# ─────────────────────────────────────────────
+
+def fetch_briefing() -> dict:
+client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
+response = client.messages.create(
+model=“claude-sonnet-4-20250514”,
+max_tokens=2000,
+system=SYSTEM_PROMPT,
+tools=[{“type”: “web_search_20250305”, “name”: “web_search”}],
+messages=[{
+“role”: “user”,
+“content”: (
+f”Génère le briefing géopolitique et économique pour aujourd’hui ({TODAY}). “
+“Recherche les 5 événements les plus importants du jour dans le monde. “
+“Analyse leur impact sur les marchés financiers, devises et secteurs clés.”
+)
+}]
+)
+text = “”.join(b.text for b in response.content if b.type == “text”)
+# Extraire le JSON même s’il y a du texte autour
+start, end = text.find(”{”), text.rfind(”}”) + 1
+return json.loads(text[start:end])
+
+# ─────────────────────────────────────────────
+
+# 2. Construire l’email HTML
+
+# ─────────────────────────────────────────────
+
+def build_html(data: dict) -> str:
+sentiment_icon, sentiment_color = SENTIMENT_ICONS.get(
+data[“market_pulse”][“sentiment”], (“→”, “#374151”)
+)
+
+```
+events_html = ""
+for ev in data.get("events", []):
+    sev = SEVERITY_COLORS.get(ev.get("severity", "medium"), SEVERITY_COLORS["medium"])
+    events_html += f"""
+    <div style="margin-bottom:16px; padding:16px; border:1px solid #e5e7eb;
+                border-left:4px solid {sev['text']}; border-radius:6px; background:#fff;">
+      <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
+        <span style="font-size:13px; color:#6b7280;">
+          {ev.get('flag','')} &nbsp;<strong>{ev.get('region','')}</strong>
+        </span>
+        <span style="font-size:11px; padding:2px 8px; border-radius:12px;
+                     background:{sev['bg']}; color:{sev['text']}; font-weight:600;">
+          {sev['label']}
+        </span>
+      </div>
+      <div style="font-size:16px; font-weight:700; color:#111827; margin-bottom:8px;">
+        {ev.get('title','')}
+      </div>
+      <div style="font-size:14px; color:#374151; line-height:1.6; margin-bottom:10px;">
+        {ev.get('summary','')}
+      </div>
+      <div style="font-size:13px; padding:10px 14px; background:#f0fdf4;
+                  border-radius:4px; color:#065f46;">
+        <strong>💹 Impact :</strong> {ev.get('economic_impact','')}
+      </div>
+    </div>"""
+
+risks_html = "".join(
+    f'<li style="margin-bottom:6px; color:#991b1b;">{r}</li>'
+    for r in data["market_pulse"].get("key_risks", [])
+)
+opps_html = "".join(
+    f'<li style="margin-bottom:6px; color:#065f46;">{o}</li>'
+    for o in data["market_pulse"].get("opportunities", [])
+)
+currencies_html = " &nbsp;·&nbsp; ".join(
+    f'<span style="font-weight:600;">{c}</span>'
+    for c in data["market_pulse"].get("currencies_watch", [])
+)
+
+return f"""<!DOCTYPE html>
+```
+
+<html lang="fr">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Briefing Géopolitique</title></head>
+<body style="margin:0;padding:0;background:#f3f4f6;font-family:Georgia,serif;">
+
+<div style="max-width:640px;margin:0 auto;background:#fff;border-radius:8px;
+            overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.08);">
+
+  <!-- Header -->
+
+  <div style="background:linear-gradient(135deg,#1e1b4b,#312e81);padding:28px 32px;">
+    <div style="font-size:11px;letter-spacing:3px;color:#a5b4fc;text-transform:uppercase;
+                margin-bottom:8px;font-family:monospace;">◈ BRIEFING QUOTIDIEN</div>
+    <div style="font-size:24px;color:#fff;font-weight:normal;">{data.get('headline','')}</div>
+    <div style="font-size:12px;color:#818cf8;margin-top:8px;font-family:monospace;">{TODAY}</div>
+  </div>
+
+  <div style="padding:28px 32px;">
+
+```
+<!-- Sentiment -->
+<div style="display:flex;gap:12px;margin-bottom:24px;flex-wrap:wrap;">
+  <div style="flex:1;min-width:140px;padding:14px;border:1px solid #e5e7eb;border-radius:6px;">
+    <div style="font-size:11px;color:#9ca3af;font-family:monospace;margin-bottom:4px;">SENTIMENT</div>
+    <div style="font-size:20px;font-weight:bold;color:{sentiment_color};">
+      {sentiment_icon} {data['market_pulse'].get('sentiment','').capitalize()}
+    </div>
+  </div>
+  <div style="flex:2;min-width:200px;padding:14px;border:1px solid #e5e7eb;border-radius:6px;">
+    <div style="font-size:11px;color:#9ca3af;font-family:monospace;margin-bottom:4px;">DEVISES À SURVEILLER</div>
+    <div style="font-size:13px;color:#374151;">{currencies_html}</div>
+  </div>
+</div>
+
+<!-- Events -->
+<div style="font-size:13px;letter-spacing:2px;color:#4f46e5;text-transform:uppercase;
+            font-family:monospace;margin-bottom:14px;">ÉVÉNEMENTS DU JOUR</div>
+{events_html}
+
+<!-- Risks & Opportunities -->
+<div style="display:flex;gap:16px;margin-top:24px;flex-wrap:wrap;">
+  <div style="flex:1;min-width:200px;">
+    <div style="font-size:12px;color:#991b1b;font-family:monospace;
+                letter-spacing:1px;margin-bottom:8px;">⚠ RISQUES CLÉS</div>
+    <ul style="margin:0;padding-left:18px;font-size:13px;">{risks_html}</ul>
+  </div>
+  <div style="flex:1;min-width:200px;">
+    <div style="font-size:12px;color:#065f46;font-family:monospace;
+                letter-spacing:1px;margin-bottom:8px;">✦ OPPORTUNITÉS</div>
+    <ul style="margin:0;padding-left:18px;font-size:13px;">{opps_html}</ul>
+  </div>
+</div>
+
+<!-- Analyst Note -->
+<div style="margin-top:24px;padding:20px;background:#f5f3ff;
+            border-left:3px solid #6366f1;border-radius:0 6px 6px 0;">
+  <div style="font-size:11px;color:#6366f1;font-family:monospace;
+              letter-spacing:2px;margin-bottom:8px;">◈ NOTE DE L'ANALYSTE</div>
+  <div style="font-size:14px;color:#374151;line-height:1.7;font-style:italic;">
+    "{data.get('analyst_note','')}"
+  </div>
+</div>
+```
+
+  </div>
+
+  <!-- Footer -->
+
+  <div style="padding:16px 32px;background:#f9fafb;border-top:1px solid #e5e7eb;
+              font-size:11px;color:#9ca3af;font-family:monospace;text-align:center;">
+    Généré automatiquement par Claude · {TODAY}
+  </div>
+</div>
+</body></html>"""
+
+# ─────────────────────────────────────────────
+
+# 3. Construire le texte brut
+
+# ─────────────────────────────────────────────
+
+def build_text(data: dict) -> str:
+lines = [
+f”BRIEFING GÉOPOLITIQUE & ÉCONOMIQUE — {TODAY}”,
+“=” * 60,
+“”,
+data.get(“headline”, “”),
+“”,
+f”SENTIMENT MARCHÉ : {data[‘market_pulse’].get(‘sentiment’,’’).upper()}”,
+f”DEVISES : {’, ‘.join(data[‘market_pulse’].get(‘currencies_watch’, []))}”,
+“”,
+“─” * 60,
+“ÉVÉNEMENTS DU JOUR”,
+“─” * 60,
+]
+for i, ev in enumerate(data.get(“events”, []), 1):
+lines += [
+f”\n{i}. {ev.get(‘flag’,’’)} {ev.get(‘region’,’’)} — {ev.get(‘severity’,’’).upper()}”,
+f”   {ev.get(‘title’,’’)}”,
+f”   {ev.get(‘summary’,’’)}”,
+f”   Impact : {ev.get(‘economic_impact’,’’)}”,
+]
+lines += [
+“”,
+“─” * 60,
+“RISQUES CLÉS”,
+“─” * 60,
+]
+for r in data[“market_pulse”].get(“key_risks”, []):
+lines.append(f”  ⚠ {r}”)
+lines += [
+“”,
+“─” * 60,
+“OPPORTUNITÉS”,
+“─” * 60,
+]
+for o in data[“market_pulse”].get(“opportunities”, []):
+lines.append(f”  ✦ {o}”)
+lines += [
+“”,
+“─” * 60,
+“NOTE DE L’ANALYSTE”,
+“─” * 60,
+data.get(“analyst_note”, “”),
+“”,
+“─” * 60,
+“Généré automatiquement par Claude”,
+]
+return “\n”.join(lines)
+
+# ─────────────────────────────────────────────
+
+# 4. Envoyer l’email
+
+# ─────────────────────────────────────────────
+
+def send_email(html_body: str, text_body: str) -> None:
+msg = MIMEMultipart(“alternative”)
+msg[“Subject”] = f”📊 Briefing Géopolitique — {TODAY}”
+msg[“From”]    = GMAIL_ADDRESS
+msg[“To”]      = RECIPIENT_EMAIL
+
+```
+msg.attach(MIMEText(text_body, "plain", "utf-8"))
+msg.attach(MIMEText(html_body, "html",  "utf-8"))
+
+with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+    server.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
+    server.sendmail(GMAIL_ADDRESS, RECIPIENT_EMAIL, msg.as_string())
+print(f"✅ Briefing envoyé à {RECIPIENT_EMAIL}")
+```
+
+# ─────────────────────────────────────────────
+
+# Point d’entrée
+
+# ─────────────────────────────────────────────
+
+if **name** == “**main**”:
+print(“🔍 Récupération des événements du jour…”)
+data = fetch_briefing()
+print(f”✅ {len(data.get(‘events’, []))} événements trouvés”)
+
+```
+html = build_html(data)
+text = build_text(data)
+
+print("📧 Envoi de l'email...")
+send_email(html, text)
+```
