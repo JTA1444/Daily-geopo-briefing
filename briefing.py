@@ -1,10 +1,10 @@
-import anthropic
-import smtplib
 import os
 import json
+import smtplib
 from datetime import date
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+import urllib.request
 
 # ─────────────────────────────────────────────
 
@@ -12,35 +12,39 @@ from email.mime.text import MIMEText
 
 # ─────────────────────────────────────────────
 
-ANTHROPIC_API_KEY  = os.environ[“ANTHROPIC_API_KEY”]
+GEMINI_API_KEY     = os.environ[“GEMINI_API_KEY”]
 GMAIL_ADDRESS      = os.environ[“GMAIL_ADDRESS”]
 GMAIL_APP_PASSWORD = os.environ[“GMAIL_APP_PASSWORD”]
 RECIPIENT_EMAIL    = os.environ[“RECIPIENT_EMAIL”]
 
 TODAY = date.today().strftime(”%A %d %B %Y”)
 
-SYSTEM_PROMPT = “”“Tu es un analyste géopolitique et économique de haut niveau.
-Génère un briefing JSON structuré avec ce format EXACT (réponds UNIQUEMENT avec le JSON, sans backticks) :
-{
-“headline”: “titre accrocheur résumant la journée”,
+PROMPT = f””“Tu es un analyste géopolitique et économique de haut niveau.
+Aujourd’hui nous sommes le {TODAY}.
+
+Recherche les 5 événements géopolitiques les plus importants du jour dans le monde et analyse leur impact économique.
+
+Réponds UNIQUEMENT avec un objet JSON valide (sans backticks, sans markdown), avec ce format exact :
+{{
+“headline”: “titre accrocheur résumant la journée en une phrase”,
 “events”: [
-{
-“flag”: “emoji drapeau”,
-“region”: “pays / région”,
+{{
+“flag”: “emoji drapeau du pays”,
+“region”: “pays ou région”,
 “title”: “titre de l’événement”,
 “summary”: “résumé factuel en 2-3 phrases”,
-“economic_impact”: “impact concret sur marchés, devises, secteurs”,
+“economic_impact”: “impact concret sur marchés, devises, matières premières ou secteurs”,
 “severity”: “low|medium|high|critical”
-}
+}}
 ],
-“market_pulse”: {
+“market_pulse”: {{
 “sentiment”: “bullish|bearish|neutral|volatile”,
 “key_risks”: [“risque 1”, “risque 2”, “risque 3”],
 “opportunities”: [“opportunité 1”, “opportunité 2”],
-“currencies_watch”: [“paire 1”, “paire 2”]
-},
+“currencies_watch”: [“USD/EUR”, “USD/JPY”]
+}},
 “analyst_note”: “synthèse finale en 3-4 phrases”
-}”””
+}}”””
 
 SEVERITY_COLORS = {
 “low”:      {“bg”: “#d1fae5”, “text”: “#065f46”, “label”: “Faible”},
@@ -58,30 +62,43 @@ SENTIMENT_ICONS = {
 
 # ─────────────────────────────────────────────
 
-# 1. Appel API Claude avec web search
+# 1. Appel API Gemini avec Google Search
 
 # ─────────────────────────────────────────────
 
 def fetch_briefing() -> dict:
-client = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
-response = client.messages.create(
-model=“claude-sonnet-4-20250514”,
-max_tokens=2000,
-system=SYSTEM_PROMPT,
-tools=[{“type”: “web_search_20250305”, “name”: “web_search”}],
-messages=[{
-“role”: “user”,
-“content”: (
-f”Génère le briefing géopolitique et économique pour aujourd’hui ({TODAY}). “
-“Recherche les 5 événements les plus importants du jour dans le monde. “
-“Analyse leur impact sur les marchés financiers, devises et secteurs clés.”
+url = (
+f”https://generativelanguage.googleapis.com/v1beta/models/”
+f”gemini-2.0-flash:generateContent?key={GEMINI_API_KEY}”
 )
-}]
+payload = {
+“contents”: [{“parts”: [{“text”: PROMPT}]}],
+“tools”: [{“google_search”: {}}],   # recherche web gratuite
+“generationConfig”: {“temperature”: 0.3}
+}
+data = json.dumps(payload).encode(“utf-8”)
+req  = urllib.request.Request(
+url, data=data,
+headers={“Content-Type”: “application/json”},
+method=“POST”
 )
-text = “”.join(b.text for b in response.content if b.type == “text”)
-# Extraire le JSON même s’il y a du texte autour
-start, end = text.find(”{”), text.rfind(”}”) + 1
+with urllib.request.urlopen(req) as resp:
+result = json.loads(resp.read())
+
+```
+# Extraire le texte de la réponse
+text = result["candidates"][0]["content"]["parts"][0]["text"]
+
+# Nettoyer et parser le JSON
+text = text.strip()
+if text.startswith("```"):
+    text = text.split("```")[1]
+    if text.startswith("json"):
+        text = text[4:]
+start = text.find("{")
+end   = text.rfind("}") + 1
 return json.loads(text[start:end])
+```
 
 # ─────────────────────────────────────────────
 
@@ -99,35 +116,35 @@ events_html = ""
 for ev in data.get("events", []):
     sev = SEVERITY_COLORS.get(ev.get("severity", "medium"), SEVERITY_COLORS["medium"])
     events_html += f"""
-    <div style="margin-bottom:16px; padding:16px; border:1px solid #e5e7eb;
-                border-left:4px solid {sev['text']}; border-radius:6px; background:#fff;">
-      <div style="display:flex; justify-content:space-between; margin-bottom:8px;">
-        <span style="font-size:13px; color:#6b7280;">
+    <div style="margin-bottom:16px;padding:16px;border:1px solid #e5e7eb;
+                border-left:4px solid {sev['text']};border-radius:6px;background:#fff;">
+      <div style="display:flex;justify-content:space-between;margin-bottom:8px;">
+        <span style="font-size:13px;color:#6b7280;">
           {ev.get('flag','')} &nbsp;<strong>{ev.get('region','')}</strong>
         </span>
-        <span style="font-size:11px; padding:2px 8px; border-radius:12px;
-                     background:{sev['bg']}; color:{sev['text']}; font-weight:600;">
+        <span style="font-size:11px;padding:2px 8px;border-radius:12px;
+                     background:{sev['bg']};color:{sev['text']};font-weight:600;">
           {sev['label']}
         </span>
       </div>
-      <div style="font-size:16px; font-weight:700; color:#111827; margin-bottom:8px;">
+      <div style="font-size:16px;font-weight:700;color:#111827;margin-bottom:8px;">
         {ev.get('title','')}
       </div>
-      <div style="font-size:14px; color:#374151; line-height:1.6; margin-bottom:10px;">
+      <div style="font-size:14px;color:#374151;line-height:1.6;margin-bottom:10px;">
         {ev.get('summary','')}
       </div>
-      <div style="font-size:13px; padding:10px 14px; background:#f0fdf4;
-                  border-radius:4px; color:#065f46;">
+      <div style="font-size:13px;padding:10px 14px;background:#f0fdf4;
+                  border-radius:4px;color:#065f46;">
         <strong>💹 Impact :</strong> {ev.get('economic_impact','')}
       </div>
     </div>"""
 
 risks_html = "".join(
-    f'<li style="margin-bottom:6px; color:#991b1b;">{r}</li>'
+    f'<li style="margin-bottom:6px;color:#991b1b;">{r}</li>'
     for r in data["market_pulse"].get("key_risks", [])
 )
 opps_html = "".join(
-    f'<li style="margin-bottom:6px; color:#065f46;">{o}</li>'
+    f'<li style="margin-bottom:6px;color:#065f46;">{o}</li>'
     for o in data["market_pulse"].get("opportunities", [])
 )
 currencies_html = " &nbsp;·&nbsp; ".join(
@@ -142,11 +159,8 @@ return f"""<!DOCTYPE html>
 <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Briefing Géopolitique</title></head>
 <body style="margin:0;padding:0;background:#f3f4f6;font-family:Georgia,serif;">
-
 <div style="max-width:640px;margin:0 auto;background:#fff;border-radius:8px;
             overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.08);">
-
-  <!-- Header -->
 
   <div style="background:linear-gradient(135deg,#1e1b4b,#312e81);padding:28px 32px;">
     <div style="font-size:11px;letter-spacing:3px;color:#a5b4fc;text-transform:uppercase;
@@ -156,28 +170,24 @@ return f"""<!DOCTYPE html>
   </div>
 
   <div style="padding:28px 32px;">
+    <div style="display:flex;gap:12px;margin-bottom:24px;flex-wrap:wrap;">
+      <div style="flex:1;min-width:140px;padding:14px;border:1px solid #e5e7eb;border-radius:6px;">
+        <div style="font-size:11px;color:#9ca3af;font-family:monospace;margin-bottom:4px;">SENTIMENT</div>
+        <div style="font-size:20px;font-weight:bold;color:{sentiment_color};">
+          {sentiment_icon} {data['market_pulse'].get('sentiment','').capitalize()}
+        </div>
+      </div>
+      <div style="flex:2;min-width:200px;padding:14px;border:1px solid #e5e7eb;border-radius:6px;">
+        <div style="font-size:11px;color:#9ca3af;font-family:monospace;margin-bottom:4px;">DEVISES À SURVEILLER</div>
+        <div style="font-size:13px;color:#374151;">{currencies_html}</div>
+      </div>
+    </div>
 
 ```
-<!-- Sentiment -->
-<div style="display:flex;gap:12px;margin-bottom:24px;flex-wrap:wrap;">
-  <div style="flex:1;min-width:140px;padding:14px;border:1px solid #e5e7eb;border-radius:6px;">
-    <div style="font-size:11px;color:#9ca3af;font-family:monospace;margin-bottom:4px;">SENTIMENT</div>
-    <div style="font-size:20px;font-weight:bold;color:{sentiment_color};">
-      {sentiment_icon} {data['market_pulse'].get('sentiment','').capitalize()}
-    </div>
-  </div>
-  <div style="flex:2;min-width:200px;padding:14px;border:1px solid #e5e7eb;border-radius:6px;">
-    <div style="font-size:11px;color:#9ca3af;font-family:monospace;margin-bottom:4px;">DEVISES À SURVEILLER</div>
-    <div style="font-size:13px;color:#374151;">{currencies_html}</div>
-  </div>
-</div>
-
-<!-- Events -->
 <div style="font-size:13px;letter-spacing:2px;color:#4f46e5;text-transform:uppercase;
             font-family:monospace;margin-bottom:14px;">ÉVÉNEMENTS DU JOUR</div>
 {events_html}
 
-<!-- Risks & Opportunities -->
 <div style="display:flex;gap:16px;margin-top:24px;flex-wrap:wrap;">
   <div style="flex:1;min-width:200px;">
     <div style="font-size:12px;color:#991b1b;font-family:monospace;
@@ -191,7 +201,6 @@ return f"""<!DOCTYPE html>
   </div>
 </div>
 
-<!-- Analyst Note -->
 <div style="margin-top:24px;padding:20px;background:#f5f3ff;
             border-left:3px solid #6366f1;border-radius:0 6px 6px 0;">
   <div style="font-size:11px;color:#6366f1;font-family:monospace;
@@ -204,11 +213,9 @@ return f"""<!DOCTYPE html>
 
   </div>
 
-  <!-- Footer -->
-
   <div style="padding:16px 32px;background:#f9fafb;border-top:1px solid #e5e7eb;
               font-size:11px;color:#9ca3af;font-family:monospace;text-align:center;">
-    Généré automatiquement par Claude · {TODAY}
+    Généré automatiquement par Gemini · {TODAY}
   </div>
 </div>
 </body></html>"""
@@ -240,31 +247,17 @@ f”   {ev.get(‘title’,’’)}”,
 f”   {ev.get(‘summary’,’’)}”,
 f”   Impact : {ev.get(‘economic_impact’,’’)}”,
 ]
-lines += [
-“”,
-“─” * 60,
-“RISQUES CLÉS”,
-“─” * 60,
-]
+lines += [””, “─” * 60, “RISQUES CLÉS”, “─” * 60]
 for r in data[“market_pulse”].get(“key_risks”, []):
 lines.append(f”  ⚠ {r}”)
-lines += [
-“”,
-“─” * 60,
-“OPPORTUNITÉS”,
-“─” * 60,
-]
+lines += [””, “─” * 60, “OPPORTUNITÉS”, “─” * 60]
 for o in data[“market_pulse”].get(“opportunities”, []):
 lines.append(f”  ✦ {o}”)
 lines += [
-“”,
-“─” * 60,
-“NOTE DE L’ANALYSTE”,
-“─” * 60,
+“”, “─” * 60, “NOTE DE L’ANALYSTE”, “─” * 60,
 data.get(“analyst_note”, “”),
-“”,
-“─” * 60,
-“Généré automatiquement par Claude”,
+“”, “─” * 60,
+“Généré automatiquement par Gemini”,
 ]
 return “\n”.join(lines)
 
@@ -297,7 +290,7 @@ print(f"✅ Briefing envoyé à {RECIPIENT_EMAIL}")
 # ─────────────────────────────────────────────
 
 if **name** == “**main**”:
-print(“🔍 Récupération des événements du jour…”)
+print(“🔍 Récupération des événements du jour via Gemini…”)
 data = fetch_briefing()
 print(f”✅ {len(data.get(‘events’, []))} événements trouvés”)
 
